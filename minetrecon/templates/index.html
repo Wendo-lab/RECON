@@ -1,15 +1,103 @@
+{% load static %}
+
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MINET RECONCILIATION</title>
+    <style>
+        /* Reset default margin and padding */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        /* Full-page styling */
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f0f4f8;
+            background-image: url("{% static 'image/finance.PNG' %}");
+            background-size: cover;
+            background-position: center;
+            font-family: Arial, sans-serif;
+        }
+
+        /* Form container */
+        form {
+            background-color: #ffffff;
+            padding: 50px;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            width: 400px;
+            text-align: center;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+            font-size: 28px;
+            color: #333;
+        }
+
+        label {
+            font-size: 18px;
+            margin-bottom: 10px;
+            display: block;
+            color: #270909;
+        }
+
+        input, select, button {
+            width: 100%;
+            margin-bottom: 15px;
+            padding: 10px;
+            font-size: 16px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        /* Styling the logo */
+        .form-logo {
+            width: 150px;
+            height: auto;
+            margin-bottom: 20px;
+        }
+
+        button {
+            background-color: #FF0000;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #FF0000;
+        }
+
+        /* Responsive design for smaller screens */
+        @media (max-width: 500px) {
+            form {
+                width: 90%;
+            }
+        }
+    </style>
 </head>
 <body>
-    <h1>MINET RECONCILIATION</h1>
     <form method="post" enctype="multipart/form-data">
         {% csrf_token %}
+        
+        <!-- Logo inside the form above the heading -->
+        <img src="{% static 'image/minetlogo.png' %}" alt="Minet Logo" class="form-logo">
+        
+        <h1>MINET RECONCILIATION</h1>
+
+        <!-- Display the form fields -->
         {{ form.as_p }}
+
         <button type="submit">Upload Excel Workbook</button>
     </form>
-    
 </body>
 </html>

@@ -5,7 +5,8 @@ from .models import Accounts  # Assuming this is the model for account mapping
 from openpyxl import load_workbook
 from .forms import MultiFileUploadForm
 from django.shortcuts import render
-
+from datetime import datetime
+# Upload files and process them
 def upload_files(request):
     if request.method == 'POST':
         form = MultiFileUploadForm(request.POST, request.FILES)
@@ -13,11 +14,13 @@ def upload_files(request):
             file1 = request.FILES['file1']  # Bank Statement Workbook
             file2 = request.FILES['file2']  # General Ledger
             
-
+           
+           
             try:
                 # Step 1: Extract GLID from the General Ledger
                 df2 = pd.read_excel(file2)
                 
+
                 processed_df2 = df2.copy()
                 if len(df2) >= 5:
                     account_number_gl = df2.iloc[4, 0]  # Extract GLID from row 6, column A
@@ -46,6 +49,8 @@ def upload_files(request):
                 
                 # Read matched sheet into a DataFrame
                 sheet = pd.read_excel(file1, sheet_name=matched_sheet)
+
+
                 
                 processed_df1 = sheet.copy()  # Copy for manipulation bank statement data
 
@@ -60,6 +65,11 @@ def upload_files(request):
                 gl_data = df2.iloc[5:, [1, 2, 9]].copy()
                 gl_data.columns = ['Date', 'Narrative', 'Amount']
                 gl_data['Amount'] = pd.to_numeric(gl_data['Amount'], errors='coerce')
+
+                
+
+              
+                # Filter GL data by month (dates in column A)
 
                 gl_debits = gl_data[gl_data['Amount'] > 0].copy()
                 gl_credits = gl_data[gl_data['Amount'] < 0].copy()
@@ -97,7 +107,7 @@ def upload_files(request):
 
                 bank_charges = bank_debits_filtered[
                     bank_debits_filtered['Transaction details'].str.contains(
-                        'Transaction Charge|Excise Duty|Ledger fee', na=False
+                        'Transaction Charge|Excise Duty|Ledger fee|Witholding Tax|Transactional Fee |IB Bulk Transfer Charge', na=False
                     )
                 ].copy()
 
@@ -107,7 +117,34 @@ def upload_files(request):
                 
                 
                 # Step 2: Remove 'Is Reconciled' and 'Reconciliation Method' columns from bank charges
-                bank_charges.drop(columns=['Is Reconciled', 'Reconciliation Method'], inplace=True)
+                bank_charges.drop(columns=['Is Reconciled', 'Reconciliation Method','Reconciliation Reference'], inplace=True)
+                
+                #Loop through the bank charges and add reference numbers from the matched rows
+                for idx, row in bank_charges.iterrows():
+                    transaction_detail = row['Transaction details']
+                    reference_found = False
+                    for sheet_idx in range(len(sheet)):
+                         # Iterate through the sheet to find the matching 'Transaction details'
+                        if sheet.iloc[sheet_idx, 1] == transaction_detail:  # Assuming 'Transaction details' are in column 1 (index 1)
+                            if sheet_idx + 1 < len(sheet):
+                                bank_charges.at[idx, 'Reference No'] = sheet.iloc[sheet_idx + 1, 1]  # Cell below
+                            else:
+                                bank_charges.at[idx, 'Reference No'] = 'N/A'  # No cell below
+                            reference_found = True
+                            break  # Exit loop once found
+                    if not reference_found:
+                        bank_charges.at[idx, 'Reference No'] = 'N/A'  # If no matching transaction detail found
+                
+                # Convert the 'Narrative' column to string type (handles both strings and numbers)
+                gl_debits['Narrative'] = gl_debits['Narrative'].astype(str).str.strip()
+                
+                # Create a new sheet "Receipts" for GL Debits where Narrative contains 'Cash Receipts (BTS) Run'
+                receipts_data = gl_debits[gl_debits['Narrative'].str.contains('Cash Receipts \\(BTS\\) ', na=False)].copy()
+                receipts_data.drop(columns=['Is Reconciled', 'Reconciliation Method','Reconciliation Reference'], inplace=True)
+                
+
+
+
 
                 bank_debits_filtered['Reference No'] = ''
                 bank_credits_filtered['Reference No'] = ''
@@ -164,7 +201,7 @@ def upload_files(request):
                             gl_credits.at[gl_idx, 'Reconciliation Method'] = 'BS Debit and GL Credit'
                             reconciled = True
 
-                        if any(keyword in bank_row['Transaction details'] for keyword in ["Transaction Charge", "Excise Duty", "Ledger fee"]):
+                        if any(keyword in bank_row['Transaction details'] for keyword in ["Transaction Charge", "Excise Duty", "Ledger fee","Withholding Tax"]):
             # Only update if the condition hasn't been set before
                             if bank_debits_filtered.at[bank_idx, 'Is Reconciled'] != 'TRUE' or \
                                 bank_debits_filtered.at[bank_idx, 'Reconciliation Method'] != 'BS Debit and GL Credit':
@@ -234,7 +271,7 @@ def upload_files(request):
 
                 # Step 7: Output the results for download
                 output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                with pd.ExcelWriter(output, engine='openpyxl' ) as writer:
 
                     
                     processed_df1.to_excel(writer, index=False, sheet_name='Bank Statement')
@@ -244,6 +281,8 @@ def upload_files(request):
                     gl_debits.to_excel(writer, sheet_name='GL Debits', index=False)
                     gl_credits.to_excel(writer, sheet_name='GL Credits', index=False)
                     bank_charges.to_excel(writer, index=False, sheet_name='Bank Charges debited')
+                    receipts_data.to_excel(writer, sheet_name='Receipts', index=False)
+
 
                     
 
@@ -447,6 +486,7 @@ def upload_files(request):
                 response= HttpResponse(output, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 response['Content-Disposition'] = 'attachment; filename=reconciled_data.xlsx'
                 return response
+                
 
                 
             except Exception as e:
