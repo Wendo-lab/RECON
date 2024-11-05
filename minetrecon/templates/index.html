@@ -86,7 +86,7 @@
     </style>
 </head>
 <body>
-    <form method="post" enctype="multipart/form-data">
+    <form method="post" enctype="multipart/form-data" action="{% url 'upload_file' %}">
         {% csrf_token %}
         
         <!-- Logo inside the form above the heading -->

@@ -4,24 +4,162 @@ from django.http import HttpResponse
 from .models import Accounts  # Assuming this is the model for account mapping
 from openpyxl import load_workbook
 from .forms import MultiFileUploadForm
-from django.shortcuts import render
+from django.shortcuts import render,redirect
 from datetime import datetime
+from django.contrib.auth import authenticate, login
+from django.contrib import messages
+import numpy as np
+from django.http import JsonResponse
+import requests
+from django.views.decorators.csrf import csrf_exempt
+import json
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.styles import Font
+from openpyxl import load_workbook
+
+def login_view(request):
+    if request.method == 'POST':
+        username = request.POST.get('username')
+        password = request.POST.get('password')
+
+        if not username or not password:
+            return JsonResponse({'error': 'Fields cannot be empty'}, status=400)
+
+        login_url = f'https://ussd.minet.co.ke/api/login.php?username={username}&password={password}'
+        response = requests.get(login_url)
+        data = response.json()
+
+        if data['status'] == 0:  # Assuming '0' means success
+            user_data = data['data'][0]
+            request.session['user_data'] = user_data
+            return JsonResponse({'redirect_url': '/upload/'})  # Redirect on success
+        else:
+            return JsonResponse({'error': 'Login failed. ' + data.get('message', 'Unknown error')}, status=400)
+
+    return render(request, 'login.html')
+
+
+
+def filter_by_month_year(bank_df, gl_df, selected_month, selected_year):
+    # Convert selected month and year to integers
+    selected_month = int(selected_month)
+    selected_year = int(selected_year)
+
+    # Print input DataFrames for debugging
+    #print("Bank DataFrame before filtering:")
+    #print(bank_df.head())
+
+    #print("General Ledger DataFrame before filtering:")
+    #print(gl_df.head())
+
+    # Filter Bank Statement based on 'Account Name:'
+    filtered_bank_df = bank_df[bank_df['Account Name:'].notna()].copy()
+    filtered_bank_df['Date'] = pd.to_datetime(filtered_bank_df['Account Name:'], errors='coerce')
+
+    # Filter General Ledger based on 'Unnamed: 1'
+    filtered_gl_df = gl_df[gl_df['Unnamed: 1'].notna()].copy()
+
+    # Extract relevant dates from column B starting below the 6th cell (row index 5)
+    filtered_gl_df = filtered_gl_df.iloc[6:].copy()  # Start from row index 6
+    filtered_gl_df['Date'] = filtered_gl_df['Unnamed: 1'].str.extract(r'(\d{2}/\d{2}/\d{4})')[0]  # Extract date (DD/MM/YYYY)
+    filtered_gl_df['Period'] = filtered_gl_df['Unnamed: 1'].str.extract(r'(\d{2} \d{4})')[0]  # Extract period (MM YYYY)
+
+    # Combine Period and Date into a single datetime column
+    filtered_gl_df['Parsed Date'] = pd.to_datetime(filtered_gl_df['Date'], format='%d/%m/%Y', errors='coerce')
+    filtered_gl_df['Parsed Period'] = pd.to_datetime(filtered_gl_df['Period'], format='%m %Y', errors='coerce')
+
+    # Print parsed dates for debugging
+    #print("Parsed Dates and Periods in General Ledger DataFrame:")
+    #print(filtered_gl_df[['Unnamed: 1', 'Parsed Date', 'Parsed Period']].head(20))  # Show the parsed dates
+
+    # Apply filtering based on selected month and year
+    filtered_bank_df = filtered_bank_df[(filtered_bank_df['Date'].dt.month == selected_month) & 
+                                        (filtered_bank_df['Date'].dt.year == selected_year)]
+
+    # Filter General Ledger based on the parsed period
+    filtered_gl_df = filtered_gl_df[(filtered_gl_df['Parsed Period'].dt.month == selected_month) & 
+                                     (filtered_gl_df['Parsed Period'].dt.year == selected_year)]
+
+    # Print the results of filtering for debugging
+    #print("Filtered Bank DataFrame:")
+    #print(filtered_bank_df)
+
+    #print("Filtered General Ledger DataFrame:")
+    #print(filtered_gl_df)
+
+    # Check if any records were found after filtering
+    if filtered_gl_df.empty:
+        print("No matching records found in the General Ledger.")
+
+    # Rename columns in the Bank Statement sheet
+    filtered_bank_df.rename(columns={
+        filtered_bank_df.columns[0]: 'Transaction Date',
+        filtered_bank_df.columns[1]: 'Description',
+        filtered_bank_df.columns[2]: 'Value Date',
+        filtered_bank_df.columns[3]: 'Debit',
+        filtered_bank_df.columns[4]: 'Credit',
+        filtered_bank_df.columns[5]: 'Balance'
+    }, inplace=True)
+
+    # Drop the 'Date' column
+    if 'Date' in filtered_bank_df.columns:
+        filtered_bank_df.drop(columns=['Date'], inplace=True)
+
+    filtered_gl_df.rename(columns={
+        filtered_gl_df.columns[0]: 'Batch #',
+        filtered_gl_df.columns[1]: 'Period/Date',
+        filtered_gl_df.columns[2]: 'Description',
+        filtered_gl_df.columns[3]: 'BRT',
+        filtered_gl_df.columns[4]: 'BRun',
+        filtered_gl_df.columns[5]: 'SRC',
+        filtered_gl_df.columns[6]: 'Orig Currency',
+        filtered_gl_df.columns[7]: 'Currency',
+        filtered_gl_df.columns[8]: 'Rate',
+        filtered_gl_df.columns[9]: 'Amount'
+        
+    }, inplace=True)
+
+    # Drop the 'Date' column
+    if 'Unamed: 6' in filtered_gl_df.columns:
+        filtered_gl_df.drop(columns=['Unamed: 6'], inplace=True)
+
+    if 'Date' in filtered_gl_df.columns:
+        filtered_gl_df.drop(columns=['Date'], inplace=True)
+
+    if 'Period' in filtered_gl_df.columns:
+        filtered_gl_df.drop(columns=['Period'], inplace=True)
+    
+    if 'Parsed Date' in filtered_gl_df.columns:
+        filtered_gl_df.drop(columns=['Parsed Date'], inplace=True)
+
+    if 'Parsed Period' in filtered_gl_df.columns:
+        filtered_gl_df.drop(columns=['Parsed Period'], inplace=True)
+   
+    return filtered_bank_df.reset_index(drop=True), filtered_gl_df.reset_index(drop=True)
+
+
+
+
 # Upload files and process them
-def upload_files(request):
+def upload_file(request):
     if request.method == 'POST':
         form = MultiFileUploadForm(request.POST, request.FILES)
         if form.is_valid():
             file1 = request.FILES['file1']  # Bank Statement Workbook
             file2 = request.FILES['file2']  # General Ledger
-            
            
+
            
             try:
-                # Step 1: Extract GLID from the General Ledger
-                df2 = pd.read_excel(file2)
+               
                 
+                # Step 1: Extract GLID from the General Ledger
 
-                processed_df2 = df2.copy()
+
+                df2 = pd.read_excel(file2)
+              
+                processed_df2 = df2.copy() # copy for manipulation the general ledger
                 if len(df2) >= 5:
                     account_number_gl = df2.iloc[4, 0]  # Extract GLID from row 6, column A
                 else:
@@ -47,13 +185,54 @@ def upload_files(request):
                 if not matched_sheet:
                     return HttpResponse(f"No sheet found in the Bank Statement with account number {account_number_bank}.")
                 
-                # Read matched sheet into a DataFrame
+                
                 sheet = pd.read_excel(file1, sheet_name=matched_sheet)
+                
+                processed_df1 = sheet.copy()  # Copy for manipulation bank statement data
+                #print(processed_df1.columns)
+
+
+                # Step 4: Filter by Month and Year
+                selected_month = form.cleaned_data['month']
+                selected_year = form.cleaned_data['year']
+
+                
+
+                # Assuming 'Account Number:' is in the first column (0-indexed) in the bank statement
+                filtered_bank_df, filtered_gl_df = filter_by_month_year(processed_df1, processed_df2, selected_month, selected_year)
+                 # Check if the filtered DataFrames are empty
+                if filtered_bank_df.empty:
+                    return HttpResponse("No matching records found in the Bank Statement.")
+                if filtered_gl_df.empty:
+                    return HttpResponse("No matching records found in the General Ledger.")
+                
+               # Step 5: Append three empty rows to filtered_bank_df
+                empty_rows = pd.DataFrame(index=range(3), columns=filtered_bank_df.columns)
+                filtered_bank_df = pd.concat([filtered_bank_df, empty_rows], ignore_index=True)
+
+                # Step 6: Append the first six rows of processed_df1 to filtered_bank_df
+                processed_df1_to_append = processed_df1.head(5).reset_index(drop=True)
+                filtered_bank_df = pd.concat([filtered_bank_df, processed_df1_to_append], ignore_index=True)
+
+                # Step 7: Write to Excel and apply formatting to the appended rows below Column A
+                wb = Workbook()
+                ws = wb.active
+
+                for r_idx, row in enumerate(dataframe_to_rows(filtered_bank_df, index=False, header=True), 1):
+                    ws.append(row)
+                    # Apply bold formatting to Column A for the appended rows only
+                    if r_idx > len(filtered_bank_df) - 6:
+                        ws[f"A{r_idx}"].font = Font(bold=True)
+
+                save_path = "filtered_bank_df_with_appended_rows.xlsx"
+                wb.save(save_path)
+
+
+                #filtered_bank_df = pd.concat([filtered_bank_df, processed_df1.head(5)], ignore_index=True)
 
 
                 
-                processed_df1 = sheet.copy()  # Copy for manipulation bank statement data
-
+               
                 # Extract relevant columns and filter out empty rows
                 bank_debits_filtered = sheet.iloc[6:, [0, 1, 3]].dropna().reset_index(drop=True)
                 bank_credits_filtered = sheet.iloc[6:, [0, 1, 4]].dropna().reset_index(drop=True)
@@ -107,7 +286,7 @@ def upload_files(request):
 
                 bank_charges = bank_debits_filtered[
                     bank_debits_filtered['Transaction details'].str.contains(
-                        'Transaction Charge|Excise Duty|Ledger fee|Witholding Tax|Transactional Fee |IB Bulk Transfer Charge', na=False
+                        'Transaction Charge|Excise Duty|Ledger fee|Witholding Tax|Transactional Fee |IB Bulk Transfer Charge|Guarantee Commission|Gaurantee cancellation commission', na=False
                     )
                 ].copy()
 
@@ -268,20 +447,29 @@ def upload_files(request):
                 true_gl_credits_count = gl_credits['Is Reconciled'].value_counts().get('TRUE', 0)
                 false_gl_credits_count = gl_credits['Is Reconciled'].value_counts().get('FALSE', 0)
 
+                
 
                 # Step 7: Output the results for download
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl' ) as writer:
 
                     
-                    processed_df1.to_excel(writer, index=False, sheet_name='Bank Statement')
-                    processed_df2.to_excel(writer, index=False, sheet_name='General Ledger')
-                    bank_debits_filtered.to_excel(writer, sheet_name='Bank Debits', index=False)
-                    bank_credits_filtered.to_excel(writer, sheet_name='Bank Credits', index=False)
-                    gl_debits.to_excel(writer, sheet_name='GL Debits', index=False)
-                    gl_credits.to_excel(writer, sheet_name='GL Credits', index=False)
-                    bank_charges.to_excel(writer, index=False, sheet_name='Bank Charges debited')
-                    receipts_data.to_excel(writer, sheet_name='Receipts', index=False)
+                    if not filtered_bank_df.empty:
+                        filtered_bank_df.to_excel(writer, index=False, sheet_name='Bank Statement')
+                    if not filtered_gl_df.empty:
+                        filtered_gl_df.to_excel(writer, index=False, sheet_name='General Ledger')
+                    if not bank_debits_filtered.empty:
+                        bank_debits_filtered.to_excel(writer, sheet_name='Bank Debits', index=False)
+                    if not bank_credits_filtered.empty:
+                        bank_credits_filtered.to_excel(writer, sheet_name='Bank Credits', index=False)
+                    if not gl_debits.empty:
+                        gl_debits.to_excel(writer, sheet_name='GL Debits', index=False)
+                    if not gl_credits.empty:
+                        gl_credits.to_excel(writer, sheet_name='GL Credits', index=False)
+                    if not bank_charges.empty:
+                        bank_charges.to_excel(writer, index=False, sheet_name='Bank Charges debited')
+                    if not receipts_data.empty:
+                        receipts_data.to_excel(writer, sheet_name='Receipts', index=False)
 
 
                     
@@ -487,7 +675,10 @@ def upload_files(request):
                 response['Content-Disposition'] = 'attachment; filename=reconciled_data.xlsx'
                 return response
                 
+                
 
+                
+                
                 
             except Exception as e:
                 return HttpResponse(f"An error occurred: {str(e)}")    

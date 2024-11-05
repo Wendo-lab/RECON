@@ -26,7 +26,7 @@ SECRET_KEY = 'django-insecure-31t1@lmzd4y*19u^a-!#l=3a4n=^**@4_zxb0=cyfha7&q%2#f
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+
 
 
 MEDIA_URL = '/media/'
@@ -111,6 +111,9 @@ AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
     },
+]
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
 ]
 
 
