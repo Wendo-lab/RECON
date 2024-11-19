@@ -10,6 +10,8 @@
         body {
             background-image: url("{% static 'image/background.jpg' %}"); 
             background-size: cover;
+            margin: 0;
+            font-family: Arial, sans-serif;
         }
         .document-list {
             display: flex;
@@ -86,6 +88,46 @@
             height: auto;
             margin-bottom: 20px;
         }
+
+        
+        /* Responsive design for smaller screens */
+    @media (max-width: 768px) {
+        .document-list {
+            width: 90%;
+        }
+
+        .document-item {
+            font-size: 0.9em;
+        }
+
+        h1 {
+            font-size: 1.2em;
+        }
+    }
+
+    @media (max-width: 480px) {
+        .document-list {
+            width: 95%;
+            padding: 15px;
+        }
+
+        .document-item {
+            font-size: 0.8em;
+        }
+
+        h1 {
+            font-size: 1em;
+        }
+
+        .form-logo {
+            width: 120px;
+        }
+
+        button {
+            font-size: 0.9em;
+            padding: 8px 16px;
+        }
+    }
 
     </style>
 </head>
