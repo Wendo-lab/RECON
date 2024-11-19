@@ -1,0 +1,122 @@
+<!-- view_documents.html -->
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>View Documents</title>
+    <style>
+        body {
+            background-image: url("{% static 'image/background.jpg' %}"); 
+            background-size: cover;
+        }
+        .document-list {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            margin-top: 20px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background-color: #ffffff;
+            background-image: url("{% static 'image/finance.PNG' %}");
+            width: 80%;
+            max-width: 500px;
+            margin: 0 auto;
+        }
+        .document-item {
+            padding: 10px;
+            background-color: #ffffff;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            width: 100%;
+            text-align: left;
+            font-size: 1em;
+        }
+        h1 {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 1.5em;
+        }
+        /* User icon and dropdown styling */
+        .user-dropdown {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+        }
+
+        .user-dropdown button {
+            background: none;
+            border: none;
+            color: #ffffff;
+            font-size: 16px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .user-dropdown-content {
+            display: none;
+            position: absolute;
+            background-color: #ffffff;
+            min-width: 150px;
+            box-shadow: 0px 8px 16px rgba(0, 0, 0, 0.2);
+            z-index: 1;
+            border-radius: 4px;
+        }
+
+        .user-dropdown-content a {
+            color: black;
+            padding: 12px 16px;
+            text-decoration: none;
+            display: block;
+        }
+
+        .user-dropdown-content a:hover {
+            background-color: #f1f1f1;
+        }
+
+        .user-dropdown:hover .user-dropdown-content {
+            display: block;
+        }
+        /* Styling the logo */
+        .form-logo {
+            width: 150px;
+            height: auto;
+            margin-bottom: 20px;
+        }
+
+    </style>
+</head>
+<body>
+    <div class="user-dropdown">
+        <button>{{ request.session.username }} ▼</button>
+        <div class="user-dropdown-content">
+            <a href="{% url 'logout' %}">Logout</a>
+        </div>
+    </div>
+
+    <h1>Documents for Selected Date</h1>
+    <img src="{% static 'image/minetlogo.png' %}" alt="Minet Logo" class="form-logo">
+        
+    <div class="document-list">
+        <h2>Uploaded Data</h2>
+        <div id="document-container">
+            {% if documents %}
+                {% for doc in documents %}
+                    <div class="document-item">
+                        {% if doc.bank_statement %}Bank Statement: {{ doc.bank_statement }} <br>{% endif %}
+                        {% if doc.general_ledger %}General Ledger: {{ doc.general_ledger }} <br>{% endif %}
+                        {% if doc.recon_document %}Recon Document: {{ doc.recon_document }} <br>{% endif %}
+                    </div>
+                {% endfor %}
+            {% else %}
+                <p>No documents found for this date.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <button onclick="window.history.back();" style="display: block; margin: 20px auto;">Back to History</button>
+</body>
+</html>

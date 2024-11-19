@@ -1,22 +1,27 @@
 import io
 import pandas as pd
 from django.http import HttpResponse
-from .models import Accounts  # Assuming this is the model for account mapping
+from .models import Accounts, Users,Uploads,Audit  # Assuming this is the model for account mapping
 from openpyxl import load_workbook
-from .forms import MultiFileUploadForm
+from .forms import MultiFileUploadForm,DocumentDownloadForm
 from django.shortcuts import render,redirect
-from datetime import datetime
-from django.contrib.auth import authenticate, login
-from django.contrib import messages
-import numpy as np
 from django.http import JsonResponse
 import requests
-from django.views.decorators.csrf import csrf_exempt
-import json
-from openpyxl import Workbook
-from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.styles import Font
 from openpyxl import load_workbook
+import requests
+from django.contrib.auth import logout
+import os
+from django.conf import settings
+from datetime import datetime
+from zipfile import ZipFile
+import logging
+from django.utils import timezone
+import pytz
+from django.utils.timezone import now
+import pytz
+
+
+
 
 def login_view(request):
     if request.method == 'POST':
@@ -24,6 +29,13 @@ def login_view(request):
         password = request.POST.get('password')
 
         if not username or not password:
+             # Log empty field attempt
+            Audit.objects.create(
+                username=username,
+                user_action="Login failed: Empty fields",
+                date_time=timezone.now(),
+                upload=None
+            )
             return JsonResponse({'error': 'Fields cannot be empty'}, status=400)
 
         login_url = f'https://ussd.minet.co.ke/api/login.php?username={username}&password={password}'
@@ -32,14 +44,181 @@ def login_view(request):
 
         if data['status'] == 0:  # Assuming '0' means success
             user_data = data['data'][0]
-            request.session['user_data'] = user_data
+            request.session['user_data'] = user_data  # Save user data in session
+            request.session['username'] = username    # Save the entered username
+
+            # Check if the username exists in the database
+            if not Users.objects.filter(username=username).exists():
+                # Add the username if it doesn't already exist
+                Users.objects.create(username=username)
+
+            # Log successful login attempt
+            Audit.objects.create(
+                username=username,
+                user_action="Login successful",
+                date_time=timezone.now().astimezone(pytz.timezone('Africa/Nairobi')),
+                upload=None
+            )
             return JsonResponse({'redirect_url': '/upload/'})  # Redirect on success
         else:
+            error_message = data.get('message', 'Unknown error')
+
+            # Log unsuccessful login attempt
+            Audit.objects.create(
+                username=username,
+                user_action=f"Login failed: {error_message}",
+                date_time=timezone.now().astimezone(pytz.timezone('Africa/Nairobi')),
+                upload=None
+            )
+
             return JsonResponse({'error': 'Login failed. ' + data.get('message', 'Unknown error')}, status=400)
 
     return render(request, 'login.html')
 
+def logout_view(request):
+    username = request.session.get('username', 'Unknown User')  # Retrieve username from session
+    # Log the logout action in the Audit table
+    Audit.objects.create(
+        username=username,
+        user_action="Logout successful",
+        date_time=now().astimezone(pytz.timezone('Africa/Nairobi')),
+        upload=None  # Assuming no file upload is associated with logout
+    )
+    logout(request)
+    return redirect('login')  # Redirect to login page
 
+logger = logging.getLogger(__name__)
+
+
+def history_view(request):
+    form = DocumentDownloadForm()
+
+    if request.headers.get('x-requested-with') == 'XMLHttpRequest' and 'date' in request.GET:
+        # Handle AJAX request for fetching documents
+        selected_date = request.GET.get('date')
+        username = request.session.get('username')
+        try:
+            parsed_date = datetime.strptime(selected_date, '%d/%m/%Y').date()
+            uploads = Uploads.objects.filter(username=username, date_time__date=parsed_date)
+            document_choices = []
+
+            # Populate choices from available documents
+            for upload in uploads:
+                if upload.bank_statement:
+                    document_choices.append((upload.bank_statement, "Bank Statement"))
+                if upload.general_ledger:
+                    document_choices.append((upload.general_ledger, "General Ledger"))
+                if upload.recon_document:
+                    document_choices.append((upload.recon_document, "Reconciliation Document"))
+
+            return JsonResponse({'documents': document_choices})
+
+        except ValueError:
+            return JsonResponse({'error': "Invalid date format"}, status=400)
+
+    elif request.method == 'POST':
+        if 'download' in request.POST:
+            selected_date = request.POST.get('date')
+            username = request.session.get('username')
+
+            if not selected_date:
+                return render(request, 'history.html', {
+                    'form': form,
+                    'error': "Please select a date."
+                })
+
+            # Convert 'DD/MM/YYYY' format to 'YYYY-MM-DD'
+            try:
+                parsed_date = datetime.strptime(selected_date, '%d/%m/%Y').date()
+            except ValueError:
+                return render(request, 'history.html', {
+                    'form': form,
+                    'error': "Please select a valid date in 'DD/MM/YYYY' format."
+                })
+
+            # Filter uploads by username and date
+            uploads = Uploads.objects.filter(
+                username=username,
+                date_time__date=parsed_date
+            )
+
+            if not uploads:
+                return render(request, 'history.html', {
+                    'form': form,
+                    'error': "No documents found for the selected date."
+                })
+
+            file_paths = []
+            for upload in uploads:
+                if upload.bank_statement:
+                    bank_statement_path = os.path.join(settings.UPLOADS_DIR, upload.bank_statement)
+                    if os.path.exists(bank_statement_path):
+                        file_paths.append(bank_statement_path)
+
+                if upload.general_ledger:
+                    general_ledger_path = os.path.join(settings.UPLOADS_DIR, upload.general_ledger)
+                    if os.path.exists(general_ledger_path):
+                        file_paths.append(general_ledger_path)
+
+                if upload.recon_document:
+                    recon_document_path = os.path.join(settings.UPLOADS_RECONCILED_DIR, upload.recon_document)
+                    if os.path.exists(recon_document_path):
+                        file_paths.append(recon_document_path)
+
+            if not file_paths:
+                return render(request, 'history.html', {
+                    'form': form,
+                    'error': "No valid files found for the selected date."
+                })
+
+            # Create and serve zip file
+            zip_buffer = io.BytesIO()
+            with ZipFile(zip_buffer, 'w') as zip_file:
+                for file_path in file_paths:
+                    zip_file.write(file_path, os.path.basename(file_path))
+
+            zip_buffer.seek(0)
+            
+            # Log the ZIP download in the Audit table
+            Audit.objects.create(
+                username=username,
+                user_action="ZIP downloaded",
+                date_time=now().astimezone(pytz.timezone('Africa/Nairobi')),
+                upload=None  # No specific file upload related to this action
+            )
+
+
+            response = HttpResponse(zip_buffer.read(), content_type='application/zip')
+            response['Content-Disposition'] = 'attachment; filename=excel_documents.zip'
+            return response
+
+    return render(request, 'history.html', {'form': form})
+
+# JSON data endpoint
+def view_documents(request):
+    selected_date = request.GET.get('date')
+    if not selected_date:
+        return JsonResponse({"error": "No date provided"}, status=400)
+
+    try:
+        date_obj = datetime.strptime(selected_date, "%d/%m/%Y").date()
+    except ValueError:
+        return JsonResponse({"error": "Invalid date format"}, status=400)
+
+    documents = Uploads.objects.filter(
+        date_time__date=date_obj,
+        username=request.session.get('username')
+    ).values('bank_statement', 'general_ledger', 'recon_document')
+
+    doc_data = [
+        {
+            'bank_statement': doc.get('bank_statement'),
+            'general_ledger': doc.get('general_ledger'),
+            'recon_document': doc.get('recon_document')
+        }
+        for doc in documents
+    ]
+    return render(request, 'view_documents.html', {'documents': doc_data})
 
 def filter_by_month_year(bank_df, gl_df, selected_month, selected_year):
     # Convert selected month and year to integers
@@ -49,7 +228,6 @@ def filter_by_month_year(bank_df, gl_df, selected_month, selected_year):
     # Print input DataFrames for debugging
     #print("Bank DataFrame before filtering:")
     #print(bank_df.head())
-
     #print("General Ledger DataFrame before filtering:")
     #print(gl_df.head())
 
@@ -81,13 +259,17 @@ def filter_by_month_year(bank_df, gl_df, selected_month, selected_year):
     filtered_gl_df = filtered_gl_df[(filtered_gl_df['Parsed Period'].dt.month == selected_month) & 
                                      (filtered_gl_df['Parsed Period'].dt.year == selected_year)]
 
+
+    
+
     # Print the results of filtering for debugging
     #print("Filtered Bank DataFrame:")
     #print(filtered_bank_df)
-
     #print("Filtered General Ledger DataFrame:")
     #print(filtered_gl_df)
 
+
+    
     # Check if any records were found after filtering
     if filtered_gl_df.empty:
         print("No matching records found in the General Ledger.")
@@ -105,6 +287,9 @@ def filter_by_month_year(bank_df, gl_df, selected_month, selected_year):
     # Drop the 'Date' column
     if 'Date' in filtered_bank_df.columns:
         filtered_bank_df.drop(columns=['Date'], inplace=True)
+
+    filtered_bank_df.iloc[0, 6:] = None
+
 
     filtered_gl_df.rename(columns={
         filtered_gl_df.columns[0]: 'Batch #',
@@ -135,8 +320,13 @@ def filter_by_month_year(bank_df, gl_df, selected_month, selected_year):
 
     if 'Parsed Period' in filtered_gl_df.columns:
         filtered_gl_df.drop(columns=['Parsed Period'], inplace=True)
+
+    
    
     return filtered_bank_df.reset_index(drop=True), filtered_gl_df.reset_index(drop=True)
+
+
+
 
 
 
@@ -148,7 +338,30 @@ def upload_file(request):
         if form.is_valid():
             file1 = request.FILES['file1']  # Bank Statement Workbook
             file2 = request.FILES['file2']  # General Ledger
-           
+
+
+            
+
+            # Define the upload path
+            upload_dir = os.path.join(settings.BASE_DIR, 'uploads')
+            reconciled_dir = os.path.join(settings.BASE_DIR, 'uploads_reconciled')
+            os.makedirs(upload_dir, exist_ok=True)  # Create 'uploads' directory if it doesn't exist
+            os.makedirs(reconciled_dir, exist_ok=True)
+            
+
+            # Get the current date and time as a string for appending to file names
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            # Prepare the filenames by replacing spaces with underscores and appending the timestamp
+            file1_name = f"NCBA_BANK_STATEMENT_{timestamp}.xlsx"
+            file2_name = f"GENERAL_LEDGER_{timestamp}.xlsx"
+            reconciled_file_name = f"reconciled_data_{timestamp}.xlsx"
+
+            # Save the files in the 'uploads' directory
+            file1_path = os.path.join(upload_dir, file1_name)
+            file2_path = os.path.join(upload_dir, file2_name)
+            reconciled_file_path = os.path.join(reconciled_dir, reconciled_file_name)
+
 
            
             try:
@@ -183,6 +396,13 @@ def upload_file(request):
                             break  # Exit after finding the match
 
                 if not matched_sheet:
+                    username = request.session.get('username', 'guest')
+                    Audit.objects.create(
+                        username=username,
+                        user_action="Upload failed: No matching account found between GLID and bank account",
+                        date_time=timezone.now().astimezone(pytz.timezone('Africa/Nairobi')),
+                        upload=None
+                    )
                     return HttpResponse(f"No sheet found in the Bank Statement with account number {account_number_bank}.")
                 
                 
@@ -191,45 +411,21 @@ def upload_file(request):
                 processed_df1 = sheet.copy()  # Copy for manipulation bank statement data
                 #print(processed_df1.columns)
 
+                
+               
+
+                    
+
+               
 
                 # Step 4: Filter by Month and Year
                 selected_month = form.cleaned_data['month']
                 selected_year = form.cleaned_data['year']
 
-                
-
+               
                 # Assuming 'Account Number:' is in the first column (0-indexed) in the bank statement
                 filtered_bank_df, filtered_gl_df = filter_by_month_year(processed_df1, processed_df2, selected_month, selected_year)
-                 # Check if the filtered DataFrames are empty
-                if filtered_bank_df.empty:
-                    return HttpResponse("No matching records found in the Bank Statement.")
-                if filtered_gl_df.empty:
-                    return HttpResponse("No matching records found in the General Ledger.")
                 
-               # Step 5: Append three empty rows to filtered_bank_df
-                empty_rows = pd.DataFrame(index=range(3), columns=filtered_bank_df.columns)
-                filtered_bank_df = pd.concat([filtered_bank_df, empty_rows], ignore_index=True)
-
-                # Step 6: Append the first six rows of processed_df1 to filtered_bank_df
-                processed_df1_to_append = processed_df1.head(5).reset_index(drop=True)
-                filtered_bank_df = pd.concat([filtered_bank_df, processed_df1_to_append], ignore_index=True)
-
-                # Step 7: Write to Excel and apply formatting to the appended rows below Column A
-                wb = Workbook()
-                ws = wb.active
-
-                for r_idx, row in enumerate(dataframe_to_rows(filtered_bank_df, index=False, header=True), 1):
-                    ws.append(row)
-                    # Apply bold formatting to Column A for the appended rows only
-                    if r_idx > len(filtered_bank_df) - 6:
-                        ws[f"A{r_idx}"].font = Font(bold=True)
-
-                save_path = "filtered_bank_df_with_appended_rows.xlsx"
-                wb.save(save_path)
-
-
-                #filtered_bank_df = pd.concat([filtered_bank_df, processed_df1.head(5)], ignore_index=True)
-
 
                 
                
@@ -239,6 +435,8 @@ def upload_file(request):
 
                 bank_debits_filtered.columns = ['Date', 'Transaction details', 'Debit amount']
                 bank_credits_filtered.columns = ['Date', 'Transaction details', 'Credit amount']
+
+
 
                 # Step 4: Process the General Ledger data
                 gl_data = df2.iloc[5:, [1, 2, 9]].copy()
@@ -380,7 +578,7 @@ def upload_file(request):
                             gl_credits.at[gl_idx, 'Reconciliation Method'] = 'BS Debit and GL Credit'
                             reconciled = True
 
-                        if any(keyword in bank_row['Transaction details'] for keyword in ["Transaction Charge", "Excise Duty", "Ledger fee","Withholding Tax"]):
+                        if any(keyword in bank_row['Transaction details'] for keyword in ["Transaction Charge", "Excise Duty", "Ledger fee","Witholding Tax","Transactional Fee", "IB Bulk Transfer Charge", "Guarantee Commission", "Gaurantee cancellation commission"]):
             # Only update if the condition hasn't been set before
                             if bank_debits_filtered.at[bank_idx, 'Is Reconciled'] != 'TRUE' or \
                                 bank_debits_filtered.at[bank_idx, 'Reconciliation Method'] != 'BS Debit and GL Credit':
@@ -453,11 +651,14 @@ def upload_file(request):
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl' ) as writer:
 
-                    
+                    if not processed_df1.empty:
+                        processed_df1.to_excel(writer, index=False, sheet_name='Bank Statement')
+                    if not processed_df2.empty:
+                        processed_df2.to_excel(writer, index=False, sheet_name='General Ledger')
                     if not filtered_bank_df.empty:
-                        filtered_bank_df.to_excel(writer, index=False, sheet_name='Bank Statement')
+                        filtered_bank_df.to_excel(writer, index=False, sheet_name='Bank Statement edited')
                     if not filtered_gl_df.empty:
-                        filtered_gl_df.to_excel(writer, index=False, sheet_name='General Ledger')
+                        filtered_gl_df.to_excel(writer, index=False, sheet_name='General Ledger edited')
                     if not bank_debits_filtered.empty:
                         bank_debits_filtered.to_excel(writer, sheet_name='Bank Debits', index=False)
                     if not bank_credits_filtered.empty:
@@ -650,41 +851,69 @@ def upload_file(request):
                 output = io.BytesIO()  # Reset the BytesIO object
                 wb.save(output)
                 #wb.save('reconciled_data.xlsx')
-                
-
-
+ 
                 #writer.sheets['Bank Charges debited'] = writer.book.add_worksheet('Bank Charges debited')
-                
-                
-
-
+   
             # Set the cursor position to the beginning of the stream
                 output.seek(0)
-            #request.session['processed_file'] = output.getvalue()
 
-            # Send a response indicating success
-            #return render(request, 'index.html', {
-                #'form': form,
-                #'download_ready': True
-            #})
+                # Save the reconciled workbook to `uploads_reconciled` folder
+               
+                with open(reconciled_file_path, 'wb') as reconciled_file:
+                    reconciled_file.write(output.getvalue())
+
+                # Verify if reconciled file has been successfully saved
+                if not os.path.exists(reconciled_file_path):
+                    Audit.objects.create(
+                        username=username,
+                        user_action="Upload failed: Reconciled file could not be saved",
+                        date_time=timezone.now().astimezone(pytz.timezone('Africa/Nairobi')),
+                        upload=None
+                    )
+                    return HttpResponse("Error: Reconciled file could not be saved.", status=500)
+
+
+                 # Now proceed to save file1 and file2 only if reconciled file is saved
+            
+                with open(file1_path, 'wb') as f:
+                    for chunk in file1.chunks():
+                        f.write(chunk)
+
+                with open(file2_path, 'wb') as f:
+                    for chunk in file2.chunks():
+                        f.write(chunk)
+
+                # Save data to the database
+                username = request.session.get('username', 'guest')
+                
+                  # get the username from the session
+                upload_entry = Uploads.objects.create(
+                    username=username,
+                    bank_statement=file1_name,
+                    general_ledger=file2_name,
+                    recon_document=reconciled_file_name,
+                    date_time=datetime.now().astimezone(pytz.timezone('Africa/Nairobi')),  # this will be automatically set with auto_now_add in models
+                )
+
+                # Record successful upload in the Audit table
+                Audit.objects.create(
+                    username=username,
+                    user_action="Upload successful",
+                    date_time=timezone.now().astimezone(pytz.timezone('Africa/Nairobi')),
+                    upload=upload_entry
+                )
 
             # Send the file to the user for download
-        
-                    
-                response= HttpResponse(output, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+               
+                response= HttpResponse(open(reconciled_file_path, 'rb').read(), content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 response['Content-Disposition'] = 'attachment; filename=reconciled_data.xlsx'
                 return response
-                
-                
-
-                
-                
-                
+       
             except Exception as e:
+                
+                
                 return HttpResponse(f"An error occurred: {str(e)}")    
-        
-        
-            
+   
     else:
         form = MultiFileUploadForm()
     return render(request, 'index.html', {'form': form})

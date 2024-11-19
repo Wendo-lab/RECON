@@ -27,11 +27,16 @@ SECRET_KEY = 'django-insecure-31t1@lmzd4y*19u^a-!#l=3a4n=^**@4_zxb0=cyfha7&q%2#f
 DEBUG = True
 
 
+# Build paths inside the project like this: BASE_DIR / 'subdir'.
+#BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+#MEDIA_URL = '/media/'
+UPLOADS_DIR = os.path.join(BASE_DIR, 'uploads')
+UPLOADS_RECONCILED_DIR = os.path.join(BASE_DIR, 'uploads_reconciled')
 
+# Ensure this path exists on your server or local development machine
+# If not, create it manually or use Django to create it programmatically
 
 # Application definition
 

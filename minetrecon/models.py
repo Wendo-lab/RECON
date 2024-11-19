@@ -12,6 +12,43 @@ class Accounts(models.Model):
         managed = False
         db_table = 'accounts'
 
+class Users(models.Model):
+    user_id = models.AutoField(primary_key=True)
+    username = models.CharField(max_length=255)
+
+    class Meta:
+        managed = False
+        db_table = 'users'
+
+class Uploads(models.Model):
+    upload_id = models.AutoField(primary_key=True)
+    username = models.CharField(max_length=255)
+    bank_statement = models.CharField(max_length=255)
+    general_ledger = models.CharField(max_length=255)
+    recon_document = models.CharField(max_length=255)
+    date_time = models.DateTimeField(blank=True, null=True)
+
+    
+
+    class Meta:
+        managed = False
+        db_table = 'uploads'
+
+    
+
+   
+
+class Audit(models.Model):
+    audit_id = models.AutoField(primary_key=True)
+    username = models.CharField(max_length=255)
+    user_action = models.CharField(max_length=255)
+    date_time = models.DateTimeField(blank=True, null=True)
+    upload = models.ForeignKey('Uploads', models.DO_NOTHING, blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'audit'
+
 
 class AuthGroup(models.Model):
     name = models.CharField(unique=True, max_length=150)
